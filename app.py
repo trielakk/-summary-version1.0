@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import openpyxl
+from datetime import datetime
 import io
 import re
 
@@ -12,7 +13,7 @@ st.set_page_config(
 )
 
 st.title("📊 OOH 投放结案 Summary 模板自动化生成工具")
-st.write("上传 **Spotplan 表格**、**统计 DB 表格** 以及 **结案 Summary 模板文件**。系统将**自动取消数据区的合并单元格**，按模板样式填充数据并**保留动态 Excel 计算公式**。")
+st.write("上传 **Spotplan 表格**、**统计 DB 表格** 以及 **结案 Summary 模板文件**。系统将**自动提取主媒体折扣关联计算赠送净价价值（W列）**，完美保留动态计算公式。")
 
 st.divider()
 
@@ -29,13 +30,29 @@ with col3:
     template_file = st.file_uploader("3. 上传 Summary 模板 (.xlsx)", type=["xlsx"], key="template")
 
 def clean_location_name(loc_name):
-    """提取并清洗媒体名称，增强自动匹配效率"""
+    """提取并清洗媒体名称，去掉（赠送/额外赠送/增值）字眼"""
     if not loc_name:
         return "", "", ""
     loc = str(loc_name).strip()
-    loc_clean = re.sub(r'[（\(](赠送|额外赠送)[）\)]', '', loc).strip()
+    loc_clean = re.sub(r'[（\(](赠送|额外赠送|增值)[）\)]', '', loc).strip()
     loc_clean2 = re.sub(r'[（\(]\d+块/套[）\)]', '', loc_clean).strip()
     return loc_clean, loc_clean2, loc
+
+def parse_days_from_period(period_str):
+    """解析如 2026.03.01-2026.03.14 的周期格式并计算天数"""
+    if not period_str:
+        return 0
+    match = re.search(r'(\d{4}[\.\/-]\d{1,2}[\.\/-]\d{1,2})\s*[-~至]\s*(\d{4}[\.\/-]\d{1,2}[\.\/-]\d{1,2})', str(period_str))
+    if match:
+        try:
+            d1_str = re.sub(r'[\/-]', '.', match.group(1))
+            d2_str = re.sub(r'[\/-]', '.', match.group(2))
+            d1 = datetime.strptime(d1_str, "%Y.%m.%d")
+            d2 = datetime.strptime(d2_str, "%Y.%m.%d")
+            return (d2 - d1).days + 1
+        except Exception:
+            return 0
+    return 0
 
 def generate_summary_from_template(spot_file, db_file, template_file):
     # -------------------------------------------------------------
@@ -83,52 +100,90 @@ def generate_summary_from_template(spot_file, db_file, template_file):
             spot_rows.append(row_data)
 
     # -------------------------------------------------------------
-    # 3. 加载上传的模板文件并取消数据区的合并单元格
+    # 3. 加载模板并预处理：扫描无“赠送”字样的主媒体折扣与对应行号
     # -------------------------------------------------------------
     wb_tpl = openpyxl.load_workbook(template_file)
     ws_tpl = wb_tpl.active
     
     start_row = 4  # 数据写入起始行
-    end_row = start_row + len(spot_rows)
     
-    # 【核心逻辑】：先对数据填入区域解除合并单元格
+    # 取消数据填入区域的合并单元格
     merged_ranges = list(ws_tpl.merged_cells.ranges)
     for rng in merged_ranges:
-        # 如果合并单元格交叉或位于数据填写区域内（行>=4），则解除合并
         if rng.max_row >= start_row:
             ws_tpl.unmerge_cells(str(rng))
+
+    # 【核心新增步骤】：映射主媒体与其对应的“行号”及“折扣值”
+    main_media_info = {} # key: cleaned_name, value: {'row': current_row, 'discount': discount_val}
+    for idx, row in enumerate(spot_rows):
+        current_row = start_row + idx
+        loc = str(row[2] or '')
+        c1, c2, orig = clean_location_name(loc)
+        is_bonus = ("赠送" in orig) or ("额外赠送" in orig) or ("增值" in orig)
+        
+        # 如果是不带赠送的主媒体，记录其在输出表中的Excel行号和折扣
+        if not is_bonus and c1:
+            discount_val = row[10] # Col L: Discount
+            main_media_info[c1] = {'row': current_row, 'discount': discount_val}
+            if c2:
+                main_media_info[c2] = {'row': current_row, 'discount': discount_val}
 
     # 提取模板中第 4 行的样式作为样式基准
     sample_cells = [ws_tpl.cell(start_row, col) for col in range(1, 30)]
 
     # -------------------------------------------------------------
-    # 4. 填充数据并写入动态 Excel 公式
+    # 4. 填充数据、匹配主媒体折扣并嵌入原生 Excel 计算公式
     # -------------------------------------------------------------
     for idx, row in enumerate(spot_rows):
         current_row = start_row + idx
         
-        mkt = row[0]          # Col B
-        fmt = row[1]          # Col C
-        loc = row[2]          # Col D
-        period = row[3]       # Col E
-        no_week = row[4]      # Col F
-        no_unit = row[5]      # Col G
-        buying_unit = row[6]  # Col H
-        duration_freq = row[7]# Col I
-        ratecard_cost = row[8]# Col J
-        ratecard_ttl = row[9] # Col K
-        discount = row[10]    # Col L
-        net_unit_cost = row[11]# Col M
-        net_ttl_cost = row[12] # Col N
-        unit_prod_fee = row[13]# Col O
-        prod_fee = row[14]    # Col P
-        gross_cost = row[15]  # Col Q
+        mkt = row[0]          # Col B: Market
+        fmt = row[1]          # Col C: Format
+        loc = str(row[2] or '')# Col D: Location
+        period = row[3]       # Col E: 计划投放周期
+        no_week = row[4]      # Col F: No. Of Week
+        no_unit = row[5]      # Col G: No. Of Unit
+        buying_unit = row[6]  # Col H: Buying Uint
+        duration_freq = row[7]# Col I: Duration/Frequency
+        ratecard_cost = row[8]# Col J: Ratecard Cost
+        ratecard_ttl = row[9] # Col K: Ratecard TTL Cost
+        discount = row[10]    # Col L: Discount
+        net_unit_cost = row[11]# Col M: Net Unit Cost
+        net_ttl_cost = row[12] # Col N: Net TTL Cost
+        unit_prod_fee = row[13]# Col O: Unit Production Fee
+        prod_fee = row[14]    # Col P: Production Fee
+        gross_cost = row[15]  # Col Q: Gross Cost
+
+        # 判定是否为“赠送”点位
+        c1, c2, orig = clean_location_name(loc)
+        is_bonus = ("赠送" in orig) or ("额外赠送" in orig) or ("增值" in orig)
+        
+        bonus_period_text = ""
+        actual_period_text = period
+        
+        if is_bonus:
+            bonus_period_text = f"赠送周期: {period}"
+            actual_period_text = f"{period} (赠送)"
+
+        # ---------------------------------------------------------
+        # 【核心计算】：为“赠送”点位寻找主媒体的折扣与关联公式
+        # ---------------------------------------------------------
+        w_net_value_formula = 0
+        if is_bonus:
+            # 尝试在主媒体映射表中寻找对应的无赠送字样点位
+            matched_main = main_media_info.get(c1) or main_media_info.get(c2)
+            if matched_main:
+                main_row = matched_main['row']
+                # 植入原生 Excel 公式：赠送行K列 (刊例) * 主媒体行L列 (折扣)
+                w_net_value_formula = f"=K{current_row}*L{main_row}"
+            else:
+                # 若未查到对应的主媒体行，则尝试直接乘以本行的折扣
+                w_net_value_formula = f"=K{current_row}*L{current_row}"
 
         # C列 资源数量
         resource_qty = f"{no_unit}{buying_unit}" if (no_unit and buying_unit) else no_unit
 
         # AA列 日均覆盖人次检索
-        c1, c2, orig = clean_location_name(loc)
         daily_coverage = db_lookup.get(orig) or db_lookup.get(c1) or db_lookup.get(c2)
         if daily_coverage == "/" or daily_coverage is None:
             for k, v in db_lookup.items():
@@ -155,12 +210,12 @@ def generate_summary_from_template(spot_file, db_file, template_file):
             15: unit_prod_fee,                                # O: Unit Production Fee
             16: f"=G{current_row}*O{current_row}",             # P: Production Fee 公式
             17: f"=N{current_row}+P{current_row}",             # Q: Gross Cost 公式
-            18: "",                                           # R: 额外赠送
-            19: period,                                       # S: 实际投放周期
+            18: bonus_period_text if is_bonus else "",        # R: 额外赠送（显示赠送周期）
+            19: actual_period_text,                           # S: 实际投放周期
             20: f"=N{current_row}",                            # T: 投放实际总净价 公式
             21: f"=P{current_row}",                            # U: 投放实际总制作费 公式
-            22: 0,                                            # V: 投放赠送价值（刊例）
-            23: 0,                                            # W: 投放赠送价值（净价）
+            22: f"=K{current_row}" if is_bonus else 0,         # V: 投放赠送价值（刊例直接等于自身K列）
+            23: w_net_value_formula if is_bonus else 0,       # W: 投放赠送价值（净价 = K列 * 主媒体折扣L列）
             24: 0,                                            # X: 补偿价值（净价）
             25: 0,                                            # Y: 非补偿增值赠送（刊例）
             26: 0,                                            # Z: 非补偿增值赠送（净价）
@@ -169,12 +224,12 @@ def generate_summary_from_template(spot_file, db_file, template_file):
             29: f"=AA{current_row}*AB{current_row}"           # AC: 总覆盖人次 公式 (日均*天数)
         }
 
-        # 取消合并后，所有单元格均可正常写入和继承样式
+        # 写入单元格并完全复刻模板样式
         for col_idx, val in row_values.items():
             cell = ws_tpl.cell(row=current_row, column=col_idx)
             cell.value = val
             
-            # 继承模板第 4 行单元格的样式属性
+            # 继承模板第 4 行单元格样式
             sample_cell = sample_cells[col_idx - 1]
             if sample_cell.has_style:
                 cell.font = sample_cell.font.copy()
@@ -191,15 +246,15 @@ def generate_summary_from_template(spot_file, db_file, template_file):
 
 # 触发按钮逻辑
 if spot_file and db_file and template_file:
-    if st.button("🚀 套用模板生成结案 Summary (含动态公式)", type="primary"):
+    if st.button("🚀 套用模板生成结案 Summary (关联主媒体折扣与公式)", type="primary"):
         try:
-            with st.spinner("正在取消数据区合并单元格，填充数据并嵌入 Excel 公式..."):
+            with st.spinner("正在联动主媒体折扣，计算赠送价值并写入 Excel 公式..."):
                 excel_out = generate_summary_from_template(spot_file, db_file, template_file)
-                st.success("🎉 生成成功！已自动取消数据区合并并完成完整数据写入与公式植入。")
+                st.success("🎉 生成成功！已成功匹配主点位折扣，V列与W列已嵌入跨行动态关联公式。")
                 st.download_button(
                     label="📥 点击下载模板渲染 Summary.xlsx",
                     data=excel_out,
-                    file_name="OOH_投放结案_Summary_模板生成.xlsx",
+                    file_name="OOH_投放结案_Summary_主折扣联动版.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
         except Exception as e:
