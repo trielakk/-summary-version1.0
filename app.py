@@ -13,7 +13,7 @@ st.set_page_config(
 )
 
 st.title("📊 OOH 投放结案 Summary 模板自动化生成工具")
-st.write("上传 **Spotplan 表格**、**统计 DB 表格**、**赔付统计表** 以及 **结案 Summary 模板文件**。系统将**自动合并赔付方案**并**联动主媒体折扣计算赠送净价价值（W列）**，完美保留动态计算公式。")
+st.write("上传 **Spotplan 表格**、**统计 DB 表格**、**赔付统计表** 以及 **结案 Summary 模板文件**。系统将**自动合并赔付方案**并**联动主媒体折扣计算赠送净价价值（Y列）**，完美保留模板格式与动态计算公式。")
 
 st.divider()
 
@@ -40,22 +40,6 @@ def clean_location_name(loc_name):
     loc_clean = re.sub(r'[（\(](赠送|额外赠送|增值)[）\)]', '', loc).strip()
     loc_clean2 = re.sub(r'[（\(]\d+块/套[）\)]', '', loc_clean).strip()
     return loc_clean, loc_clean2, loc
-
-def parse_days_from_period(period_str):
-    """解析如 2026.03.01-2026.03.14 的周期格式并计算天数"""
-    if not period_str:
-        return 0
-    match = re.search(r'(\d{4}[\.\/-]\d{1,2}[\.\/-]\d{1,2})\s*[-~至]\s*(\d{4}[\.\/-]\d{1,2}[\.\/-]\d{1,2})', str(period_str))
-    if match:
-        try:
-            d1_str = re.sub(r'[\/-]', '.', match.group(1))
-            d2_str = re.sub(r'[\/-]', '.', match.group(2))
-            d1 = datetime.strptime(d1_str, "%Y.%m.%d")
-            d2 = datetime.strptime(d2_str, "%Y.%m.%d")
-            return (d2 - d1).days + 1
-        except Exception:
-            return 0
-    return 0
 
 def generate_summary_from_template(spot_file, db_file, comp_file, template_file):
     # -------------------------------------------------------------
@@ -160,14 +144,14 @@ def generate_summary_from_template(spot_file, db_file, comp_file, template_file)
             spot_rows.append(row_data)
 
     # -------------------------------------------------------------
-    # 4. 加载模板并预处理：扫描无“赠送”字样的主媒体折扣与对应行号
+    # 4. 加载 Summary 模板文件（保留原始样式格式与表格头结构）
     # -------------------------------------------------------------
     wb_tpl = openpyxl.load_workbook(template_file)
     ws_tpl = wb_tpl.active
     
     start_row = 4  # 数据写入起始行
     
-    # 取消数据填入区域的合并单元格
+    # 解除数据写入区域的合并单元格（避免赋值冲突）
     merged_ranges = list(ws_tpl.merged_cells.ranges)
     for rng in merged_ranges:
         if rng.max_row >= start_row:
@@ -181,14 +165,14 @@ def generate_summary_from_template(spot_file, db_file, comp_file, template_file)
         c1, c2, orig = clean_location_name(loc)
         is_bonus = ("赠送" in orig) or ("额外赠送" in orig) or ("增值" in orig)
         
-        # 如果是不带赠送的主媒体，记录其在输出表中的Excel行号和折扣
+        # 如果是不带赠送的主媒体，记录其在输出表中的 Excel 行号和折扣
         if not is_bonus and c1:
             discount_val = row[10] # Col L: Discount
             main_media_info[c1] = {'row': current_row, 'discount': discount_val}
             if c2:
                 main_media_info[c2] = {'row': current_row, 'discount': discount_val}
 
-    # 提取模板中第 4 行的样式作为样式基准
+    # 提取模板中第 4 行的单元格样式作为通用范本
     sample_cells = [ws_tpl.cell(start_row, col) for col in range(1, 32)]
 
     # -------------------------------------------------------------
@@ -217,13 +201,6 @@ def generate_summary_from_template(spot_file, db_file, comp_file, template_file)
         # 判定是否为“赠送”点位
         c1, c2, orig = clean_location_name(loc)
         is_bonus = ("赠送" in orig) or ("额外赠送" in orig) or ("增值" in orig)
-        
-        bonus_period_text = ""
-        actual_period_text = period
-        
-        if is_bonus:
-            bonus_period_text = f"赠送周期: {period}"
-            actual_period_text = f"{period} (赠送)"
 
         # 匹配赔付统计表数据
         matched_comp = comp_lookup.get(orig) or comp_lookup.get(c1) or comp_lookup.get(c2) or comp_lookup.get(f"{mkt}{c1}")
@@ -232,20 +209,20 @@ def generate_summary_from_template(spot_file, db_file, comp_file, template_file)
         comp_plan = matched_comp['plan'] if matched_comp else ""
         comp_amount = matched_comp['amount'] if matched_comp else 0
 
-        # 为“赠送”点位寻找主媒体的折扣与关联公式
-        w_net_value_formula = 0
+        # 为“赠送”点位寻找主媒体的折扣与关联公式（用于 Y 列：投放赠送价值-净价）
+        y_net_value_formula = 0
         if is_bonus:
             matched_main = main_media_info.get(c1) or main_media_info.get(c2)
             if matched_main:
                 main_row = matched_main['row']
-                w_net_value_formula = f"=K{current_row}*L{main_row}"
+                y_net_value_formula = f"=K{current_row}*L{main_row}"
             else:
-                w_net_value_formula = f"=K{current_row}*L{current_row}"
+                y_net_value_formula = f"=K{current_row}*L{current_row}"
 
         # C列 资源数量
         resource_qty = f"{no_unit}{buying_unit}" if (no_unit and buying_unit) else no_unit
 
-        # AA列 日均覆盖人次检索
+        # AC列 日均覆盖人次检索
         daily_coverage = db_lookup.get(orig) or db_lookup.get(c1) or db_lookup.get(c2)
         if daily_coverage == "/" or daily_coverage is None:
             for k, v in db_lookup.items():
@@ -253,47 +230,46 @@ def generate_summary_from_template(spot_file, db_file, comp_file, template_file)
                     daily_coverage = v
                     break
 
-        # 构造包含 Excel 原生计算公式与赔付信息的列映射结构
+        # 构造并严格保持 Summary 模板中的公式结构
         row_values = {
-            1: mkt,                                           # A: 市场
-            2: loc,                                           # B: 媒体
-            3: resource_qty,                                  # C: 资源数量
-            4: duration_freq,                                 # D: 广告频次
-            5: period,                                        # E: 计划投放周期
-            6: no_week,                                       # F: No. Of Week
-            7: no_unit,                                       # G: No. Of Unit
-            8: buying_unit,                                   # H: Buying Uint
-            9: duration_freq,                                 # I: Duration/Frequency
-            10: ratecard_cost,                                # J: Ratecard Cost
-            11: f"=F{current_row}*G{current_row}*J{current_row}", # K: Ratecard TTL Cost 公式
-            12: discount,                                     # L: Discount
-            13: f"=J{current_row}*L{current_row}",             # M: Net Unit Cost 公式
-            14: f"=F{current_row}*G{current_row}*M{current_row}", # N: Net TTL Cost 公式
-            15: unit_prod_fee,                                # O: Unit Production Fee
-            16: f"=G{current_row}*O{current_row}",             # P: Production Fee 公式
-            17: f"=N{current_row}+P{current_row}",             # Q: Gross Cost 公式
-            18: comp_anomaly,                                 # R: 第三方监测/媒体自查情况
-            19: comp_plan,                                    # S: 补偿方案
-            20: bonus_period_text if is_bonus else 0,         # T: 额外赠送
-            21: actual_period_text,                           # U: 实际投放周期
-            22: f"=N{current_row}",                            # V: 投放实际总净价 公式
-            23: f"=P{current_row}",                            # W: 投放实际总制作费 公式
-            24: f"=K{current_row}" if is_bonus else 0,         # X: 投放赠送价值（刊例）
-            25: w_net_value_formula if is_bonus else 0,       # Y: 投放赠送价值（净价）
-            26: comp_amount,                                  # Z: 补偿价值（净价）
-            27: 0,                                            # AA: 非补偿增值赠送（刊例）
-            28: 0,                                            # AB: 非补偿增值赠送（净价）
-            29: daily_coverage if daily_coverage is not None else 0, # AC: 日均覆盖人次
-            30: f"=F{current_row}*7",                         # AD: 投放天数 公式 (周数*7)
-            31: f"=AC{current_row}*AD{current_row}"           # AE: 总覆盖人次 公式
+            1: mkt,                                                        # A: 市场
+            2: loc,                                                        # B: 媒体
+            3: resource_qty,                                               # C: 资源数量
+            4: duration_freq,                                              # D: 广告频次
+            5: period,                                                     # E: 计划投放周期
+            6: f"=(_xlfn.TEXTAFTER(E{current_row},\"-\")-_xlfn.TEXTBEFORE(E{current_row},\"-\")+1)/7", # F: No. Of Week 公式
+            7: no_unit,                                                    # G: No. Of Unit
+            8: buying_unit,                                                # H: Buying Uint
+            9: duration_freq,                                              # I: Duration/Frequency
+            10: ratecard_cost,                                             # J: Ratecard Cost
+            11: f"=J{current_row}*G{current_row}*F{current_row}",          # K: Ratecard TTL Cost 公式
+            12: discount if not is_bonus else 0,                           # L: Discount
+            13: f"=J{current_row}*L{current_row}",                          # M: Net Unit Cost 公式
+            14: f"=ROUND(M{current_row}*F{current_row}*G{current_row},0)", # N: Net TTL Cost 公式
+            15: unit_prod_fee if not is_bonus else 0,                      # O: Unit Production Fee
+            16: f"=O{current_row}*G{current_row}",                          # P: Production Fee 公式
+            17: f"=N{current_row}+P{current_row}",                          # Q: Gross Cost 公式
+            18: comp_anomaly,                                              # R: 第三方监测/媒体自查情况
+            19: comp_plan,                                                 # S: 补偿方案
+            20: 0 if not is_bonus else "",                                 # T: 额外赠送
+            21: f"=_xlfn.TEXTBEFORE(E{current_row},\"-\")&\"-\"&_xlfn.TEXTAFTER(E{current_row+1},\"-\")" if not is_bonus else "", # U: 实际投放周期
+            22: f"=N{current_row}" if not is_bonus else 0,                  # V: 投放实际总净价 公式
+            23: f"=P{current_row}" if not is_bonus else 0,                  # W: 投放实际总制作费 公式
+            24: 0 if not is_bonus else f"=K{current_row}",                  # X: 投放赠送价值（刊例）
+            25: 0 if not is_bonus else y_net_value_formula,                # Y: 投放赠送价值（净价）
+            26: comp_amount,                                               # Z: 补偿价值（净价）
+            27: 0,                                                         # AA: 非补偿增值赠送（刊例）
+            28: 0,                                                         # AB: 非补偿增值赠送（净价）
+            29: daily_coverage if (daily_coverage is not None and not is_bonus) else "", # AC: 日均覆盖人次
+            30: f"=_xlfn.TEXTAFTER(U{current_row},\"-\")-_xlfn.TEXTBEFORE(U{current_row},\"-\")+1" if not is_bonus else "", # AD: 投放天数 公式
+            31: f"=AC{current_row}*AD{current_row}" if not is_bonus else "" # AE: 总覆盖人次 公式
         }
 
-        # 写入单元格并完全复刻模板样式
+        # 写入单元格并完全继承模板第 4 行的原本样式格式
         for col_idx, val in row_values.items():
             cell = ws_tpl.cell(row=current_row, column=col_idx)
             cell.value = val
             
-            # 继承模板第 4 行单元格样式
             if col_idx - 1 < len(sample_cells):
                 sample_cell = sample_cells[col_idx - 1]
                 if sample_cell.has_style:
@@ -303,7 +279,7 @@ def generate_summary_from_template(spot_file, db_file, comp_file, template_file)
                     cell.alignment = sample_cell.alignment.copy()
                     cell.number_format = sample_cell.number_format
 
-    # 导出文件字节流
+    # 导出包含完整格式与公式的 Excel 文件流
     output = io.BytesIO()
     wb_tpl.save(output)
     output.seek(0)
@@ -315,11 +291,11 @@ if spot_file and db_file and comp_file and template_file:
         try:
             with st.spinner("正在匹配赔付统计、联动主媒体折扣并写入 Excel 公式..."):
                 excel_out = generate_summary_from_template(spot_file, db_file, comp_file, template_file)
-                st.success("🎉 生成成功！赔付统计表信息已合并写入 R/S/Z 列，主点位折扣与公式已完成嵌套。")
+                st.success("🎉 生成成功！数据已完全复刻模板格式，且 Excel 公式与赔付统计均已嵌套完成。")
                 st.download_button(
                     label="📥 点击下载最新 Summary 结案表.xlsx",
                     data=excel_out,
-                    file_name="OOH_投放结案_Summary_含赔付汇总版.xlsx",
+                    file_name="OOH_投放结案_Summary_标准格式版.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
         except Exception as e:
