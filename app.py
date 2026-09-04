@@ -8,38 +8,40 @@ import re
 
 # 页面基础配置
 st.set_page_config(
-    page_title="OOH 投放结案 Summary 自动化生成器",
+    page_title="OOH 投放结案 Summary 模板自动化生成器",
     page_icon="📊",
     layout="wide"
 )
 
-st.title("📊 OOH 户外广告投放结案 Summary 自动化生成工具")
-st.write("只需上传原始 **Spotplan** 和 **统计 DB** 两个 Excel 文件，系统将自动读取、格式化、自动匹配 VLOOKUP 日均覆盖数据并导出标准 Summary 报表。")
+st.title("📊 OOH 投放结案 Summary 模板自动化生成工具")
+st.write("上传 **Spotplan 表格**、**统计 DB 表格** 以及 **结案 Summary 模板文件**。系统将完美复刻模板样式，并在输出文件中**完整保留动态 Excel 计算公式**。")
 
 st.divider()
 
-# 文件上传区域
-col1, col2 = st.columns(2)
+# 文件上传区域（3个上传框）
+col1, col2, col3 = st.columns(3)
 
 with col1:
-    spot_file = st.file_uploader("1. 上传 Spotplan 文件 (.xlsx)", type=["xlsx"], key="spot")
+    spot_file = st.file_uploader("1. 上传 Spotplan (.xlsx)", type=["xlsx"], key="spot")
 
 with col2:
-    db_file = st.file_uploader("2. 上传 统计 DB 文件 (.xlsx)", type=["xlsx"], key="db")
+    db_file = st.file_uploader("2. 上传 统计 DB (.xlsx)", type=["xlsx"], key="db")
+
+with col3:
+    template_file = st.file_uploader("3. 上传 Summary 模板 (.xlsx)", type=["xlsx"], key="template")
 
 def clean_location_name(loc_name):
     """提取并清洗媒体名称，增强自动匹配效率"""
     if not loc_name:
         return "", "", ""
     loc = str(loc_name).strip()
-    # 过滤常见促销说明后缀
     loc_clean = re.sub(r'[（\(](赠送|额外赠送)[）\)]', '', loc).strip()
     loc_clean2 = re.sub(r'[（\(]\d+块/套[）\)]', '', loc_clean).strip()
     return loc_clean, loc_clean2, loc
 
-def generate_summary_excel(spot_file, db_file):
+def generate_summary_from_template(spot_file, db_file, template_file):
     # -------------------------------------------------------------
-    # 1. 加载 统计 DB 构建自动 Lookup 映射库
+    # 1. 读取 统计 DB 构建 Lookup 检索字典
     # -------------------------------------------------------------
     wb_db = openpyxl.load_workbook(db_file, data_only=True)
     ws_db = wb_db.active
@@ -48,14 +50,13 @@ def generate_summary_excel(spot_file, db_file):
     
     db_lookup = {}
     for r in range(2, ws_db.max_row + 1):
-        loc_val = ws_db.cell(r, 13).value  # Col M: Location
+        loc_val = ws_db.cell(r, 13).value       # Col M: Location
         coverage_val = ws_db.cell(r, 40).value  # Col AN: 有效覆盖人车次/天（单块）
         
         if loc_val is not None:
             loc_str = str(loc_val).strip()
             if loc_str and loc_str not in db_lookup:
                 db_lookup[loc_str] = coverage_val
-            
             c1, c2, _ = clean_location_name(loc_str)
             if c1 and c1 not in db_lookup:
                 db_lookup[c1] = coverage_val
@@ -63,12 +64,11 @@ def generate_summary_excel(spot_file, db_file):
                 db_lookup[c2] = coverage_val
 
     # -------------------------------------------------------------
-    # 2. 读取 Spotplan 数据表
+    # 2. 读取 Spotplan 明细数据
     # -------------------------------------------------------------
     wb_spot = openpyxl.load_workbook(spot_file, data_only=True)
     ws_spot = wb_spot.active
     
-    # 动态定位表头行 (寻找 Market 和 Location 所在的行)
     header_row = 4
     for r in range(1, 10):
         row_vals = [str(ws_spot.cell(r, c).value or '') for c in range(1, 15)]
@@ -76,39 +76,31 @@ def generate_summary_excel(spot_file, db_file):
             header_row = r
             break
             
-    # 抓取 Spotplan 明细数据 (Col B 到 Col Q)
     spot_rows = []
     for r in range(header_row + 1, ws_spot.max_row + 1):
-        mkt = ws_spot.cell(r, 2).value  # Col B (Market)
-        loc = ws_spot.cell(r, 4).value  # Col D (Location)
+        mkt = ws_spot.cell(r, 2).value  # Col B
+        loc = ws_spot.cell(r, 4).value  # Col D
         if mkt or loc:
             row_data = [ws_spot.cell(r, c).value for c in range(2, 18)]
             spot_rows.append(row_data)
 
     # -------------------------------------------------------------
-    # 3. 创建 Summary 格式工作簿
+    # 3. 加载上传的模板文件，保留原表头、单元格样式与条件格式
     # -------------------------------------------------------------
-    wb_out = openpyxl.Workbook()
-    ws_out = wb_out.active
-    ws_out.title = "投放结案Summary"
-
-    headers = [
-        "市场", "媒体", "资源数量", "广告频次", "计划投放周期",
-        "No. Of Week", "No. Of Unit", "Buying Uint", "Duration/\nFrequency",
-        "Ratecard Cost (RMB per week)", "Ratecard TTL Cost（RMB）", "Discount",
-        "Net Unit Cost\n(RMB per week)", "Net TTL  Cost\n（RMB）",
-        "Unit Production Fee（RMB）", "Production Fee（RMB）", "Gross Cost\n（RMB）",
-        "额外赠送", "实际投放周期", "投放实际总净价", "投放实际总制作费",
-        "投放赠送价值（刊例）", "投放赠送价值（净价）", "补偿价值（净价）",
-        "非补偿增值赠送（刊例）", "非补偿增值赠送（净价）", "日均覆盖人次", "投放天数", "总覆盖人次"
-    ]
+    wb_tpl = openpyxl.load_workbook(template_file)
+    ws_tpl = wb_tpl.active
     
-    ws_out.append(headers)
+    start_row = 4  # 默认数据写入起始行（表头下方第一行）
+    
+    # 提取模板中第 4 行的样式作为样式基准（字体、背景、边框、数字格式）
+    sample_cells = [ws_tpl.cell(start_row, col) for col in range(1, 30)]
 
     # -------------------------------------------------------------
-    # 4. 数据转化与计算逻辑填充
+    # 4. 填充数据并写入动态 Excel 公式
     # -------------------------------------------------------------
-    for row in spot_rows:
+    for idx, row in enumerate(spot_rows):
+        current_row = start_row + idx
+        
         mkt = row[0]          # Col B
         fmt = row[1]          # Col C
         loc = row[2]          # Col D
@@ -126,102 +118,85 @@ def generate_summary_excel(spot_file, db_file):
         prod_fee = row[14]    # Col P
         gross_cost = row[15]  # Col Q
 
-        # 拼合资源数量（如 1套）
+        # C列 资源数量
         resource_qty = f"{no_unit}{buying_unit}" if (no_unit and buying_unit) else no_unit
 
-        # 从 DB 中搜寻关联日均覆盖人次
+        # AA列 日均覆盖人次检索
         c1, c2, orig = clean_location_name(loc)
         daily_coverage = db_lookup.get(orig) or db_lookup.get(c1) or db_lookup.get(c2)
-        
-        # 兜底模糊搜寻策略
         if daily_coverage == "/" or daily_coverage is None:
             for k, v in db_lookup.items():
                 if c2 and c2 in k and v != "/":
                     daily_coverage = v
                     break
 
-        new_row = [
-            mkt,             # A: 市场
-            loc,             # B: 媒体
-            resource_qty,    # C: 资源数量
-            duration_freq,   # D: 广告频次
-            period,          # E: 计划投放周期
-            no_week,         # F: No. Of Week
-            no_unit,         # G: No. Of Unit
-            buying_unit,     # H: Buying Uint
-            duration_freq,   # I: Duration/Frequency
-            ratecard_cost,   # J: Ratecard Cost
-            ratecard_ttl,    # K: Ratecard TTL Cost
-            discount,        # L: Discount
-            net_unit_cost,   # M: Net Unit Cost
-            net_ttl_cost,    # N: Net TTL Cost
-            unit_prod_fee,   # O: Unit Production Fee
-            prod_fee,        # P: Production Fee
-            gross_cost,      # Q: Gross Cost
-            "",              # R: 额外赠送
-            period,          # S: 实际投放周期
-            net_ttl_cost,    # T: 投放实际总净价
-            prod_fee,        # U: 投放实际总制作费
-            0,               # V: 投放赠送价值（刊例）
-            0,               # W: 投放赠送价值（净价）
-            0,               # X: 补偿价值（净价）
-            0,               # Y: 非补偿增值赠送（刊例）
-            0,               # Z: 非补偿增值赠送（净价）
-            daily_coverage,  # AA: 日均覆盖人次 (数据库检索获得)
-            "",              # AB: 投放天数
-            ""               # AC: 总覆盖人次
-        ]
-        ws_out.append(new_row)
+        # 构造包含 Excel 原生计算公式的列映射结构
+        row_values = {
+            1: mkt,                                           # A: 市场
+            2: loc,                                           # B: 媒体
+            3: resource_qty,                                  # C: 资源数量
+            4: duration_freq,                                 # D: 广告频次
+            5: period,                                        # E: 计划投放周期
+            6: no_week,                                       # F: No. Of Week
+            7: no_unit,                                       # G: No. Of Unit
+            8: buying_unit,                                   # H: Buying Uint
+            9: duration_freq,                                 # I: Duration/Frequency
+            10: ratecard_cost,                                # J: Ratecard Cost
+            11: f"=F{current_row}*G{current_row}*J{current_row}", # K: Ratecard TTL Cost 公式
+            12: discount,                                     # L: Discount
+            13: f"=J{current_row}*L{current_row}",             # M: Net Unit Cost 公式
+            14: f"=F{current_row}*G{current_row}*M{current_row}", # N: Net TTL Cost 公式
+            15: unit_prod_fee,                                # O: Unit Production Fee
+            16: f"=G{current_row}*O{current_row}",             # P: Production Fee 公式
+            17: f"=N{current_row}+P{current_row}",             # Q: Gross Cost 公式
+            18: "",                                           # R: 额外赠送
+            19: period,                                       # S: 实际投放周期
+            20: f"=N{current_row}",                            # T: 投放实际总净价 公式
+            21: f"=P{current_row}",                            # U: 投放实际总制作费 公式
+            22: 0,                                            # V: 投放赠送价值（刊例）
+            23: 0,                                            # W: 投放赠送价值（净价）
+            24: 0,                                            # X: 补偿价值（净价）
+            25: 0,                                            # Y: 非补偿增值赠送（刊例）
+            26: 0,                                            # Z: 非补偿增值赠送（净价）
+            27: daily_coverage if daily_coverage is not None else 0, # AA: 日均覆盖人次
+            28: f"=F{current_row}*7",                         # AB: 投放天数 公式 (周数*7)
+            29: f"=AA{current_row}*AB{current_row}"           # AC: 总覆盖人次 公式 (日均*天数)
+        }
 
-    # -------------------------------------------------------------
-    # 5. 样式排版与美化 (深蓝表头 + 居中格式)
-    # -------------------------------------------------------------
-    header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-    header_font = Font(name="微软雅黑", size=10, bold=True, color="FFFFFF")
-    thin_border = Border(
-        left=Side(style='thin', color='D9D9D9'),
-        right=Side(style='thin', color='D9D9D9'),
-        top=Side(style='thin', color='D9D9D9'),
-        bottom=Side(style='thin', color='D9D9D9')
-    )
-    align_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
-
-    for cell in ws_out[1]:
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = align_center
-
-    for row in ws_out.iter_rows(min_row=2, max_row=ws_out.max_row, min_col=1, max_col=ws_out.max_column):
-        for cell in row:
-            cell.border = thin_border
-            cell.alignment = Alignment(vertical="center")
-
-    # 自动设置列宽
-    for col in ws_out.columns:
-        max_len = max(len(str(cell.value or '')) for cell in col)
-        col_letter = get_column_letter(col[0].column)
-        ws_out.column_dimensions[col_letter].width = max(max_len * 1.3, 13)
+        # 写入单元格并完全复刻模板样式
+        for col_idx, val in row_values.items():
+            cell = ws_tpl.cell(row=current_row, column=col_idx)
+            cell.value = val
+            
+            # 继承模板第 4 行单元格的样式属性
+            sample_cell = sample_cells[col_idx - 1]
+            if sample_cell.has_style:
+                cell.font = sample_cell.font.copy()
+                cell.fill = sample_cell.fill.copy()
+                cell.border = sample_cell.border.copy()
+                cell.alignment = sample_cell.alignment.copy()
+                cell.number_format = sample_cell.number_format
 
     # 导出文件字节流
     output = io.BytesIO()
-    wb_out.save(output)
+    wb_tpl.save(output)
     output.seek(0)
     return output
 
 # 触发按钮逻辑
-if spot_file and db_file:
-    if st.button("🚀 开始自动化整合并生成 Summary 表格", type="primary"):
+if spot_file and db_file and template_file:
+    if st.button("🚀 套用模板生成结案 Summary (含动态公式)", type="primary"):
         try:
-            with st.spinner("正在解析表格并匹配关联数据，请稍候..."):
-                excel_out = generate_summary_excel(spot_file, db_file)
-                st.success("🎉 生成成功！关联数据与日均覆盖人次已成功匹配与填入。")
+            with st.spinner("正在按模板填充数据并嵌入 Excel 原生计算公式..."):
+                excel_out = generate_summary_from_template(spot_file, db_file, template_file)
+                st.success("🎉 生成成功！已完美套用模板格式并植入可自动计算的 Excel 公式。")
                 st.download_button(
-                    label="📥 点击下载 OOH 投放结案 Summary.xlsx",
+                    label="📥 点击下载模板渲染 Summary.xlsx",
                     data=excel_out,
-                    file_name="OOH_投放结案_Summary_已自动生成.xlsx",
+                    file_name="OOH_投放结案_Summary_模板生成.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
         except Exception as e:
-            st.error(f"处理失败，错误原因: {str(e)}")
+            st.error(f"生成失败，错误原因: {str(e)}")
 else:
-    st.info("💡 请在下方上传区域分别选择对应的 Spotplan 文件与 统计 DB 文件。")
+    st.info("💡 请在上方的 3 个上传框中分别拖入：Spotplan 表格、统计 DB 表格 和 Summary 模板表格。")
