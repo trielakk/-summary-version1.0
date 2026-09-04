@@ -1,8 +1,6 @@
 import streamlit as st
 import pandas as pd
 import openpyxl
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
 import io
 import re
 
@@ -14,11 +12,11 @@ st.set_page_config(
 )
 
 st.title("📊 OOH 投放结案 Summary 模板自动化生成工具")
-st.write("上传 **Spotplan 表格**、**统计 DB 表格** 以及 **结案 Summary 模板文件**。系统将完美复刻模板样式，并在输出文件中**完整保留动态 Excel 计算公式**。")
+st.write("上传 **Spotplan 表格**、**统计 DB 表格** 以及 **结案 Summary 模板文件**。系统将**自动取消数据区的合并单元格**，按模板样式填充数据并**保留动态 Excel 计算公式**。")
 
 st.divider()
 
-# 文件上传区域（3个上传框）
+# 文件上传区域
 col1, col2, col3 = st.columns(3)
 
 with col1:
@@ -85,14 +83,22 @@ def generate_summary_from_template(spot_file, db_file, template_file):
             spot_rows.append(row_data)
 
     # -------------------------------------------------------------
-    # 3. 加载上传的模板文件，保留原表头、单元格样式与条件格式
+    # 3. 加载上传的模板文件并取消数据区的合并单元格
     # -------------------------------------------------------------
     wb_tpl = openpyxl.load_workbook(template_file)
     ws_tpl = wb_tpl.active
     
-    start_row = 4  # 默认数据写入起始行（表头下方第一行）
+    start_row = 4  # 数据写入起始行
+    end_row = start_row + len(spot_rows)
     
-    # 提取模板中第 4 行的样式作为样式基准（字体、背景、边框、数字格式）
+    # 【核心逻辑】：先对数据填入区域解除合并单元格
+    merged_ranges = list(ws_tpl.merged_cells.ranges)
+    for rng in merged_ranges:
+        # 如果合并单元格交叉或位于数据填写区域内（行>=4），则解除合并
+        if rng.max_row >= start_row:
+            ws_tpl.unmerge_cells(str(rng))
+
+    # 提取模板中第 4 行的样式作为样式基准
     sample_cells = [ws_tpl.cell(start_row, col) for col in range(1, 30)]
 
     # -------------------------------------------------------------
@@ -163,7 +169,7 @@ def generate_summary_from_template(spot_file, db_file, template_file):
             29: f"=AA{current_row}*AB{current_row}"           # AC: 总覆盖人次 公式 (日均*天数)
         }
 
-        # 写入单元格并完全复刻模板样式
+        # 取消合并后，所有单元格均可正常写入和继承样式
         for col_idx, val in row_values.items():
             cell = ws_tpl.cell(row=current_row, column=col_idx)
             cell.value = val
@@ -187,9 +193,9 @@ def generate_summary_from_template(spot_file, db_file, template_file):
 if spot_file and db_file and template_file:
     if st.button("🚀 套用模板生成结案 Summary (含动态公式)", type="primary"):
         try:
-            with st.spinner("正在按模板填充数据并嵌入 Excel 原生计算公式..."):
+            with st.spinner("正在取消数据区合并单元格，填充数据并嵌入 Excel 公式..."):
                 excel_out = generate_summary_from_template(spot_file, db_file, template_file)
-                st.success("🎉 生成成功！已完美套用模板格式并植入可自动计算的 Excel 公式。")
+                st.success("🎉 生成成功！已自动取消数据区合并并完成完整数据写入与公式植入。")
                 st.download_button(
                     label="📥 点击下载模板渲染 Summary.xlsx",
                     data=excel_out,
